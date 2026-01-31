@@ -20,3 +20,17 @@
 | Qwen3-8B (原始) | 0.8321 | 0.8809 |
 | Qwen3-8B-R1R2 (平滑后) | 0.8428 | 0.8887 |
 | Qwen3-8B-R1R2-R4-gptq-W8A8-static | 0.7598 | 0.7891 |
+
+## Extra测评
+通过额外的测评可以发现，预平滑模型在8bit weight only量化下不论是RTN或者GPTQ都能量化得到损失较小的整型权重。因此第三步测评中量化损失主要来自激活量化的误差，例如将激活量化方式从static pertensor改为dynamic pertoken后，指标直接和weight only量化指标相接近，几乎无激活量化损失，此外忽略down_proj层的权重 and 激活量化后，指标也接近无损失，因此down_proj的激活量化是造成误差的最大因素，其次是down_proj的权重量化。
+
+| 模型版本 | MMLU | GSM8K |
+| :--- | ---: | ---: |
+| Qwen3-8B-R1R2-gptq-W8-weightonly | 0.8301 | 0.8672 |
+| Qwen3-8B-R1R2-rtn-W8-weightonly | 0.8301 | 0.8691 |
+| Qwen3-8B-R1R2-R4-gptq-W8A8-dynamic | 0.8359 | 0.8652 |
+| Qwen3-8B-R1R2-gptq-ignore-down-W8A8-static | 0.8438 | 0.8770 |
+
+
+
+
