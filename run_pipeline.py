@@ -51,6 +51,76 @@ class PortAllocator:
 port_allocator = PortAllocator()
 
 
+# GPU 分配器（线程安全）
+class GPUAllocator:
+    def __init__(self, devices: List[int], tensor_parallel_size: int = 1):
+        self.devices = devices
+        self.tensor_parallel_size = tensor_parallel_size
+        self.lock = Lock()
+        # 计算可用的 GPU 组
+        self.num_groups = len(devices) // tensor_parallel_size
+        if self.num_groups == 0:
+            raise ValueError(f"GPU 数量 ({len(devices)}) 不足以支持 tensor_parallel_size={tensor_parallel_size}")
+        # 记录每个 GPU 组是否被占用
+        self.group_in_use = [False] * self.num_groups
+        self.condition = None  # 延迟初始化
+    
+    def _get_condition(self):
+        """延迟初始化 Condition 对象"""
+        if self.condition is None:
+            from threading import Condition
+            self.condition = Condition(self.lock)
+        return self.condition
+    
+    def allocate(self, timeout: float = None) -> List[int]:
+        """分配一组 GPU，如果没有可用的则等待"""
+        import time
+        condition = self._get_condition()
+        
+        start_time = time.time()
+        with condition:
+            while True:
+                # 查找空闲的 GPU 组
+                for group_idx in range(self.num_groups):
+                    if not self.group_in_use[group_idx]:
+                        self.group_in_use[group_idx] = True
+                        start_gpu = group_idx * self.tensor_parallel_size
+                        gpus = self.devices[start_gpu:start_gpu + self.tensor_parallel_size]
+                        logger.debug(f"分配 GPU 组 {group_idx}: {gpus}")
+                        return gpus
+                
+                # 没有空闲的 GPU 组，等待
+                if timeout is not None:
+                    elapsed = time.time() - start_time
+                    remaining = timeout - elapsed
+                    if remaining <= 0:
+                        raise TimeoutError("等待 GPU 分配超时")
+                    condition.wait(remaining)
+                else:
+                    condition.wait()
+    
+    def release(self, gpus: List[int]):
+        """释放 GPU 组"""
+        condition = self._get_condition()
+        
+        with condition:
+            # 根据 GPU 列表找到对应的组
+            if len(gpus) > 0:
+                first_gpu = gpus[0]
+                try:
+                    idx = self.devices.index(first_gpu)
+                    group_idx = idx // self.tensor_parallel_size
+                    if 0 <= group_idx < self.num_groups:
+                        self.group_in_use[group_idx] = False
+                        logger.debug(f"释放 GPU 组 {group_idx}: {gpus}")
+                        condition.notify_all()
+                except ValueError:
+                    pass
+
+# 全局 GPU 分配器（在 main 中初始化）
+gpu_allocator: GPUAllocator = None
+
+
 def load_yaml_config(config_path: str) -> Dict[str, Any]:
     """加载 YAML 配置文件"""
     path = Path(config_path)
@@ -397,12 +467,18 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
 
     # 获取 GPU 资源配置
     gpu_resources = eval_config.get('gpu_resources', {})
-    devices = gpu_resources.get('devices', [0])
     tensor_parallel_size = gpu_resources.get('tensor_parallel_size', 1)
 
-    # 如果没有指定gpu_devices，使用默认的循环分配策略
+    # 如果没有指定 gpu_devices，使用全局分配器分配
+    allocated_gpus = None
     if gpu_devices is None:
-        gpu_devices = [devices[task_idx % len(devices)]]
+        if gpu_allocator is not None:
+            gpu_devices = gpu_allocator.allocate()
+            allocated_gpus = gpu_devices  # 记录需要释放的 GPU
+        else:
+            # 降级：使用默认设备
+            devices = gpu_resources.get('devices', [0])
+            gpu_devices = devices[:tensor_parallel_size]
 
     # 获取输出目录配置
     work_dir = eval_config.get('output', {}).get('work_dir', 'outputs')
@@ -422,6 +498,9 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     if report_path.exists():
         logger.info(f"跳过 {model_name} (结果已存在)")
         results = parse_evaluation_results(model_name, output_dir)
+        # 释放 GPU
+        if allocated_gpus is not None and gpu_allocator is not None:
+            gpu_allocator.release(allocated_gpus)
         return results
 
     logger.info(f"评测 {model_name} (GPU:{gpu_devices}, TP:{tensor_parallel_size})")
@@ -454,6 +533,9 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     if not wait_for_service(port):
         vllm_process.terminate()
         vllm_process.wait()
+        # 释放 GPU
+        if allocated_gpus is not None and gpu_allocator is not None:
+            gpu_allocator.release(allocated_gpus)
         raise RuntimeError(f"vLLM 服务启动超时 (端口: {port})")
 
     try:
@@ -475,6 +557,9 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
         # 停止 vLLM 服务
         vllm_process.terminate()
         vllm_process.wait()
+        # 释放 GPU
+        if allocated_gpus is not None and gpu_allocator is not None:
+            gpu_allocator.release(allocated_gpus)
 
 
 def build_eval_script(model_path: str, eval_config: Dict[str, Any], dataset_path: str, port: int, output_dir: str) -> str:
@@ -616,6 +701,8 @@ def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, datase
 
 
 def main():
+    global gpu_allocator
+    
     parser = argparse.ArgumentParser(description='量化评测自动化流程')
     parser.add_argument('--trans-config', type=str, default=None, nargs='+',
                         help='转换配置文件路径 (支持多个，默认使用 1-trans 目录下所有 YAML)')
@@ -646,6 +733,14 @@ def main():
         else:
             eval_config = load_yaml_config(eval_files[0])
             logger.info(f"使用评测配置: {eval_files[0].name}")
+
+    # 初始化全局 GPU 分配器
+    gpu_devices = eval_config['gpu_resources']['devices']
+    tensor_parallel_size = eval_config['gpu_resources']['tensor_parallel_size']
+    gpu_allocator = GPUAllocator(gpu_devices, tensor_parallel_size)
+    max_workers = gpu_allocator.num_groups
+    
+    logger.info(f"GPU 配置: {len(gpu_devices)} 个 GPU, TP={tensor_parallel_size}, 最大并发={max_workers}")
 
     # 根据 dataset_name 生成 CSV 文件名
     dataset_name = eval_config['dataset_name']
@@ -710,12 +805,9 @@ def main():
     total_baseline = len(trans_outputs) + 1
     total_quant = len(trans_outputs) * len(quant_configs)
     total_tasks = total_baseline + total_quant
-    max_workers = len(eval_config['gpu_resources']['devices']) // eval_config['gpu_resources']['tensor_parallel_size']
     logger.info(f"阶段2 - 并行启动 {total_tasks} 个任务 (基线: {total_baseline}, 量化: {total_quant}, 并发: {max_workers})")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    max_workers = len(eval_config['gpu_resources']['devices']) // eval_config['gpu_resources']['tensor_parallel_size']
 
     def build_result(transform_name, quant_name, model_path, eval_results):
         """构建结果字典，动态包含所有评测字段"""
@@ -733,7 +825,7 @@ def main():
     task_idx = 0
     futures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 第一步：提交基线模型评测任务
+        # 第一步：提交基线模型评测任务（GPU 由 run_evaluation 内部通过 allocator 分配）
         baseline_models = [('original', base_model_str)]
         baseline_models.extend([(cfg['name'], out) for cfg, out in trans_outputs])
         
@@ -742,6 +834,7 @@ def main():
             def eval_baseline(idx=current_idx, name=model_name, path=model_path):
                 try:
                     logger.info(f"[基线 {idx + 1}/{total_baseline}] 评测: {name}")
+                    # GPU 由 run_evaluation 内部自动分配和释放
                     results = run_evaluation(path, eval_config, dataset_path, idx, total_baseline)
                     result = build_result(name, 'baseline', path, results)
                     logger.success(f"[基线 {idx + 1}/{total_baseline}] 完成: {name}")
@@ -752,33 +845,36 @@ def main():
             futures.append(executor.submit(eval_baseline))
             task_idx += 1
         
-        # 第二步：提交量化+评测任务
-        gpu_devices = eval_config['gpu_resources']['devices']
-        tensor_parallel_size = eval_config['gpu_resources']['tensor_parallel_size']
-        quant_gpu_idx = 0  # 量化任务GPU索引（按tensor_parallel_size分组）
+        # 第二步：提交量化+评测任务（GPU 由各函数内部通过 allocator 分配）
         for trans_cfg, trans_output in trans_outputs:
             for quant_cfg in quant_configs:
                 current_idx = task_idx
                 trans_name = trans_cfg['name']
                 quant_name = quant_cfg['name']
-                # 为量化+评测任务分配GPU（按tensor_parallel_size分组）
-                start_gpu = quant_gpu_idx * tensor_parallel_size
-                task_gpus = gpu_devices[start_gpu:start_gpu + tensor_parallel_size]
-                quant_gpu_idx = (quant_gpu_idx + 1) % (len(gpu_devices) // tensor_parallel_size)
-                def process_quant(idx=current_idx, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg, gpus=task_gpus):
+                
+                def process_quant(idx=current_idx, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg):
+                    gpus = None
                     try:
                         task_name = f"{t_name}-{q_name}"
+                        
+                        # 分配 GPU
+                        gpus = gpu_allocator.allocate()
                         logger.info(f"[量化 {idx - total_baseline + 1}/{total_quant}] 量化+评测: {task_name} (GPU: {gpus})")
 
                         quant_output = run_quantization(t_out, q_cfg, gpus)
+                        # 评测时传入已分配的 GPU，避免重复分配
                         results = run_evaluation(quant_output, eval_config, dataset_path, idx, total_tasks, gpus)
 
                         result = build_result(t_name, q_name, quant_output, results)
                         logger.success(f"[量化 {idx - total_baseline + 1}/{total_quant}] 完成: {task_name}")
                         return result
                     except Exception as e:
-                        logger.error(f"[量化 {idx - total_baseline + 1}/{total_quant}] 失败: {task_name} - {e}")
+                        logger.error(f"[量化 {idx - total_baseline + 1}/{total_quant}] 失败: {t_name}-{q_name} - {e}")
                         return None
+                    finally:
+                        # 确保 GPU 被释放
+                        if gpus is not None:
+                            gpu_allocator.release(gpus)
 
                 futures.append(executor.submit(process_quant))
                 task_idx += 1
