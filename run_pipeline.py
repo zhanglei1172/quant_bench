@@ -80,11 +80,12 @@ def get_configs_from_dir(directory: Path) -> List[Path]:
 
 
 def run_transform(config: Dict[str, Any], base_model: str) -> str:
-    """执行模型转换"""
+    """执行模型转换（本质上是第一步的量化）"""
     output_suffix = config.get('output_suffix')
 
-    # 如果 output_suffix 为 None，直接使用基础模型路径
+    # 如果 output_suffix 为 None，直接使用基础模型路径（original 基线）
     if output_suffix is None:
+        logger.info(f"使用原始模型: {config['name']}")
         return base_model
 
     # 拼接输出路径
@@ -97,57 +98,14 @@ def run_transform(config: Dict[str, Any], base_model: str) -> str:
 
     logger.info(f"转换 {config['name']}")
 
-    # 获取 quant_modifiers
-    quant_modifiers = config.get('quant_modifiers', {})
-
-    # 构建 recipe（将 quant_modifiers 包装在 recipe 结构中）
-    recipe = {'quant_stage': {'quant_modifiers': [quant_modifiers]}}
-    recipe_yaml_str = yaml.dump(recipe, default_flow_style=False, sort_keys=False)
-
-    # 构建转换脚本
-    trans_script = f"""
-import torch
-import yaml
-import json
-import os
-import tempfile
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from llmcompressor import oneshot
-
-MODEL_ID = "{base_model}"
-model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype="float32")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-
-# Save recipe to temp file and pass file path
-with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-    recipe_path = f.name
-    f.write('''{recipe_yaml_str}''')
-
-try:
-    oneshot(model=model, recipe=recipe_path, pipeline="datafree")
-finally:
-    os.unlink(recipe_path)
-
-SAVE_DIR = "{output_model}"
-model.save_pretrained(SAVE_DIR, save_compressed=False)
-tokenizer.save_pretrained(SAVE_DIR)
-
-# Remove quantization_config if exists
-config_path = os.path.join(SAVE_DIR, "config.json")
-if os.path.exists(config_path):
-    with open(config_path, "r") as f:
-        cfg = json.load(f)
-    if "quantization_config" in cfg:
-        del cfg["quantization_config"]
-        with open(config_path, "w") as f:
-            json.dump(cfg, f, indent=2)
-"""
+    # 复用量化脚本生成逻辑
+    quant_script = build_quant_script(base_model, output_model, config)
 
     # 保存临时脚本到 logs 目录（不删除，用于 debug）
     model_name = Path(output_model).name
     tmp_script = LOGS_DIR / f"{model_name}_trans.py"
     with open(tmp_script, 'w') as f:
-        f.write(trans_script)
+        f.write(quant_script)
 
     subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT)
     return output_model
@@ -210,18 +168,29 @@ def build_quant_script(input_model: str, output_model: str, config: Dict[str, An
                 is_weight_only = True
                 break
 
+    # 默认 save_compressed 为 False
+    if save_compressed is None:
+        save_compressed = False
+
+    # 从配置中读取 dtype（默认 auto）
+    dtype = config.get('dtype', 'auto')
+
+    # 读取是否使用原始 config.json
+    original_config_json = config.get('original_config_json', False)
+
     script = f"""
 import torch
 import yaml
 import json
 import os
 import tempfile
+import shutil
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llmcompressor import oneshot
 {'from datasets import load_dataset' if not is_data_free else ''}
 
 MODEL_ID = "{input_model}"
-model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype="{dtype}")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 """
 
@@ -277,7 +246,6 @@ try:
         recipe=recipe_path,
         pipeline="datafree",
         save_compressed={save_compressed},
-        trust_remote_code_model=True,
     )
 finally:
     os.unlink(recipe_path)
@@ -285,8 +253,59 @@ finally:
 
     script += f"""
 SAVE_DIR = "{output_model}"
-model.save_pretrained(SAVE_DIR, save_compressed={save_compressed})
+
+# 当 weight_only=True 时，使用权重移植方式保存（避免量化相关配置污染）
+if {is_weight_only}:
+    import gc
+    print(">>> [1/3] Quantization complete, preparing weight transplant...")
+    
+    # 从原始路径加载纯净模型结构到 CPU，使用相同的 dtype
+    clean_model = AutoModelForCausalLM.from_pretrained(
+        "{input_model}",
+        dtype="{dtype}",
+        device_map="cpu",
+    )
+    
+    print(">>> [2/3] Transplanting quantized weights to clean model...")
+    
+    # 复制权重（GPU 量化模型 -> CPU 纯净模型）
+    quantized_state_dict = model.state_dict()
+    clean_state_dict = clean_model.state_dict()
+    
+    for name in clean_state_dict.keys():
+        if name in quantized_state_dict:
+            try:
+                if clean_state_dict[name].shape == quantized_state_dict[name].shape:
+                    clean_state_dict[name].copy_(quantized_state_dict[name].to("cpu"))
+            except Exception as e:
+                print(f"Warning: Failed to copy {{name}}: {{e}}")
+    
+    # 释放原模型显存
+    del model
+    del quantized_state_dict
+    gc.collect()
+    
+    print(">>> [3/3] Saving clean model...")
+    model = clean_model
+    model.save_pretrained(SAVE_DIR, safe_serialization=True)
+else:
+    model.save_pretrained(SAVE_DIR, save_compressed={save_compressed})
+
 tokenizer.save_pretrained(SAVE_DIR)
+
+# 当 original_config_json=True 时，使用原始的 config.json
+if {original_config_json}:
+    import shutil
+    original_config_path = os.path.join("{input_model}", "config.json")
+    new_config_path = os.path.join(SAVE_DIR, "config.json")
+    
+    if os.path.exists(original_config_path):
+        # 如果新配置已存在，先备份
+        if os.path.exists(new_config_path):
+            shutil.copy2(new_config_path, new_config_path + ".before_original")
+        # 复制原始配置
+        shutil.copy2(original_config_path, new_config_path)
+        print(f"Replaced config.json with original from {{original_config_path}}")
 """
 
     return script

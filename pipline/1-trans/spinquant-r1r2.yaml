@@ -1,9 +1,4 @@
-# 转换配置: SpinQuant R1+R2 旋转平滑
 name: spinquant-r1r2
-description: 使用 SpinQuant 的 R1 和 R2 旋转进行预平滑
-
-input_model: ./data/models/Qwen/Qwen3-8B
-
 output_suffix: -r1r2
 
 quant_modifiers:
@@ -11,3 +6,8 @@ quant_modifiers:
       rotations: ["R1", "R2"]
       transform_type: random-hadamard
       transform_block_size: null
+
+save_compressed: False
+original_config_json: True
+dtype: float32
+input_model: ./data/models/Qwen/Qwen3-8B
