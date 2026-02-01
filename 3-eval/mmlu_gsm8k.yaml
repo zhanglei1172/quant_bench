@@ -1,0 +1,29 @@
+dataset_name: mmlu_gsm8k_128
+
+datasets:
+  - name: mmlu
+    weight: 1
+    task_type: exam
+    tags: [en]
+    few_shot_num: 0
+  - name: gsm8k
+    weight: 1
+    task_type: math
+    tags: [en]
+    few_shot_num: 0
+
+sampling:
+  total_samples: 128
+
+eval_config:
+  eval_batch_size: 128
+  generation_config:
+    max_tokens: 4096
+    temperature: 0.0
+
+gpu_resources:
+  devices: [0,1]
+  tensor_parallel_size: 1
+
+output:
+  work_dir: outputs/mmlu_gsm8k_128

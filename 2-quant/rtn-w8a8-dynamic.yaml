@@ -1,0 +1,16 @@
+name: rtn-w8a8-dynamic
+description: 使用 RTN 算法进行 W8A8 动态量化
+
+# 输出模型路径 (会自动添加后缀)
+output_suffix: -rtn-W8A8-dynamic
+
+quant_modifiers:
+  QuantizationModifier:
+    ignore: ["lm_head", "re:visual.*", "re:model.visual.*"]
+    config_groups:
+      group_0:
+        weights: {num_bits: 8, type: int, symmetric: true, strategy: channel}
+        input_activations: {num_bits: 8, type: int, symmetric: true, strategy: token, dynamic: true}
+        targets: [Linear]
+
+save_compressed: True

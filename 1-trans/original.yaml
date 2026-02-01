@@ -1,0 +1,6 @@
+name: original
+description: 原始模型，无转换
+
+input_model: /workspace/lim42@xiaopeng.com/github/quant_example/Qwen3-8B
+
+output_suffix: null
