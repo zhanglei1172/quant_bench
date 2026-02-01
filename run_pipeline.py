@@ -15,6 +15,7 @@ from typing import List, Dict, Any
 import json
 import time
 from threading import Lock
+from loguru import logger
 
 PROJECT_ROOT = Path(__file__).parent
 PIPELINE_DIR = PROJECT_ROOT / "pipline"
@@ -26,6 +27,14 @@ timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOGS_DIR = LOGS_DIR / timestamp
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# 配置 loguru
+logger.remove()  # 移除默认 handler
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level="INFO"
+)
 
 # 全局端口分配器（线程安全）
 class PortAllocator:
@@ -83,10 +92,10 @@ def run_transform(config: Dict[str, Any], base_model: str) -> str:
 
     # 检查模型是否已存在
     if Path(output_model).exists():
-        print(f"[TRANSFORM] 跳过 {config['name']} (模型已存在)")
+        logger.info(f"跳过 {config['name']} (模型已存在)")
         return output_model
 
-    print(f"[TRANSFORM] 转换 {config['name']}")
+    logger.info(f"转换 {config['name']}")
 
     # 获取 quant_modifiers
     quant_modifiers = config.get('quant_modifiers', {})
@@ -155,10 +164,10 @@ def run_quantization(input_model: str, quant_config: Dict[str, Any]) -> str:
 
     # 检查模型是否已存在
     if Path(output_model).exists():
-        print(f"[QUANTIZE] 跳过 {quant_name} (模型已存在)")
+        logger.info(f"跳过 {quant_name} (模型已存在)")
         return output_model
 
-    print(f"[QUANTIZE] 量化 {quant_name}")
+    logger.info(f"量化 {quant_name}")
 
     # 构建量化脚本
     quant_script = build_quant_script(input_model, output_model, quant_config)
@@ -294,10 +303,10 @@ def prepare_dataset(eval_config: Dict[str, Any]) -> str:
 
     # 检查数据集是否已存在
     if dataset_path.exists():
-        print(f"[DATASET] 使用现有数据集: {dataset_path.name}")
+        logger.info(f"使用现有数据集: {dataset_path.name}")
         return str(dataset_path)
 
-    print(f"[DATASET] 生成数据集: {dataset_name}")
+    logger.info(f"生成数据集: {dataset_name}")
 
     # 构建数据集配置
     datasets = []
@@ -385,11 +394,11 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     report_path = report_dir / "data_collection.json"
 
     if report_path.exists():
-        print(f"[EVAL] 跳过 {model_name} (结果已存在)")
+        logger.info(f"跳过 {model_name} (结果已存在)")
         results = parse_evaluation_results(model_name, output_dir)
         return results
 
-    print(f"[EVAL] 评测 {model_name} (GPU:{gpu_idx}, TP:{tensor_parallel_size})")
+    logger.info(f"评测 {model_name} (GPU:{gpu_idx}, TP:{tensor_parallel_size})")
 
     # 启动 vLLM 服务
     vllm_cmd = [
@@ -401,6 +410,14 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     env = os.environ.copy()
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_idx)
     env['VLLM_USE_MODELSCOPE'] = 'true'
+
+    # 保存 vLLM 启动命令到 sh 文件
+    vllm_sh_file = LOGS_DIR / f"{model_name}_vllm.sh"
+    with open(vllm_sh_file, 'w') as f:
+        f.write(f"#!/bin/bash\n")
+        f.write(f"export CUDA_VISIBLE_DEVICES={gpu_idx}\n")
+        f.write(f"export VLLM_USE_MODELSCOPE=true\n")
+        f.write(f"{' '.join(vllm_cmd)}\n")
 
     # 重定向 vLLM 日志到文件
     with open(vllm_log_file, 'w') as vllm_log:
@@ -431,8 +448,6 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
         # 停止 vLLM 服务
         vllm_process.terminate()
         vllm_process.wait()
-        if tmp_script.exists():
-            tmp_script.unlink()
 
 
 def build_eval_script(model_path: str, eval_config: Dict[str, Any], dataset_path: str, port: int, output_dir: str) -> str:
@@ -581,9 +596,9 @@ def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, datase
     
     # 如果有更新，提示用户
     if updated_count > 0:
-        print(f"[SUMMARY] 结果已保存到: {output_path} (更新了 {updated_count} 条记录)")
+        logger.info(f"结果已保存到: {output_path} (更新了 {updated_count} 条记录)")
     else:
-        print(f"[SUMMARY] 结果已保存到: {output_path} (新增 {len(all_results)} 条记录)")
+        logger.info(f"结果已保存到: {output_path} (新增 {len(all_results)} 条记录)")
 
 
 def main():
@@ -606,7 +621,7 @@ def main():
     # 加载评测配置
     if args.eval_config:
         eval_config = load_yaml_config(args.eval_config)
-        print(f"[CONFIG] 使用评测配置: {args.eval_config}")
+        logger.info(f"使用评测配置: {args.eval_config}")
     else:
         eval_dir = PIPELINE_DIR / "3-eval"
         eval_files = list(eval_dir.glob("*.yaml"))
@@ -616,7 +631,7 @@ def main():
             raise RuntimeError(f"评测配置目录下有多个 YAML 文件: {[f.name for f in eval_files]}，请只保留一个")
         else:
             eval_config = load_yaml_config(eval_files[0])
-            print(f"[CONFIG] 使用评测配置: {eval_files[0].name}")
+            logger.info(f"使用评测配置: {eval_files[0].name}")
 
     # 根据 dataset_name 生成 CSV 文件名
     dataset_name = eval_config['dataset_name']
@@ -665,7 +680,7 @@ def main():
         elif base_model != str(model_path):
             raise RuntimeError(f"转换配置的 input_model 不一致: {base_model} vs {model_path}")
     
-    print(f"[CONFIG] 基础模型路径: {base_model}")
+    logger.info(f"基础模型路径: {base_model}")
 
     # 存储所有结果
     all_results = []
@@ -678,16 +693,16 @@ def main():
 
     trans_outputs = []
     for trans_cfg in trans_configs:
-        print(f"\n[TRANS] {trans_cfg['name']}")
+        logger.info(f"阶段1 - 转换: {trans_cfg['name']}")
         trans_output = run_transform(trans_cfg, base_model)
         trans_outputs.append((trans_cfg, trans_output))
 
-    print(f"\n[TRANS] 阶段1完成 ({len(trans_outputs)} 个转换)")
+    logger.info(f"阶段1完成 ({len(trans_outputs)} 个转换)")
 
     # 阶段2: 并行执行量化和评测
     total_tasks = len(trans_outputs) * len(quant_configs)
     max_workers = len(eval_config['gpu_resources']['devices']) // eval_config['gpu_resources']['tensor_parallel_size']
-    print(f"\n[PARALLEL] 启动 {total_tasks} 个任务 (并发数: {max_workers})")
+    logger.info(f"阶段2 - 并行启动 {total_tasks} 个任务 (并发数: {max_workers})")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -696,7 +711,7 @@ def main():
     def process_task(task_idx, trans_cfg, trans_output, quant_cfg):
         """处理单个任务：量化 + 评测"""
         task_name = f"{trans_cfg['name']}-{quant_cfg['name']}"
-        print(f"\n>>> [{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] {task_name}")
+        logger.info(f"[{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] 开始: {task_name}")
 
         try:
             # 执行量化
@@ -713,10 +728,10 @@ def main():
                 'mmlu': results.get('mmlu', 0.0),
                 'gsm8k': results.get('gsm8k', 0.0),
             }
-            print(f"✓ 完成: {task_name}")
+            logger.success(f"[{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] 完成: {task_name}")
             return result
         except Exception as e:
-            print(f"✗ 失败: {task_name} - {e}")
+            logger.error(f"[{task_idx + 1}/{len(trans_outputs) * len(quant_configs)}] 失败: {task_name} - {e}")
             return None
 
     # 提交所有任务
@@ -729,18 +744,16 @@ def main():
                 futures.append(future)
                 task_idx += 1
 
-        # 等待所有任务完成
+        # 等待任务完成，每完成一个就保存结果
         for future in as_completed(futures):
             result = future.result()
             if result:
                 all_results.append(result)
+                # 立即保存结果
+                dataset_name = eval_config['dataset_name']
+                save_summary_csv(all_results, args.output_csv, dataset_name)
 
-    # 保存汇总结果
-    if all_results:
-        dataset_name = eval_config['dataset_name']
-        save_summary_csv(all_results, args.output_csv, dataset_name)
-
-    print(f"\n[SUMMARY] 所有任务完成! 结果: {args.output_csv}")
+    logger.success(f"所有任务完成! 结果: {args.output_csv}")
 
 if __name__ == '__main__':
     main()

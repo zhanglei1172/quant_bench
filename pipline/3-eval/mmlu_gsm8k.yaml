@@ -1,4 +1,4 @@
-dataset_name: mmlu_gsm8k_20
+dataset_name: mmlu_gsm8k_128
 
 datasets:
   - name: mmlu
@@ -13,7 +13,7 @@ datasets:
     few_shot_num: 0
 
 sampling:
-  total_samples: 20
+  total_samples: 128
 
 eval_config:
   eval_batch_size: 128
@@ -22,8 +22,8 @@ eval_config:
     temperature: 0.0
 
 gpu_resources:
-  devices: [0,1]
+  devices: [0,1,2]
   tensor_parallel_size: 1
 
 output:
-  work_dir: outputs/mmlu_gsm8k_20
+  work_dir: outputs/mmlu_gsm8k_128
