@@ -178,6 +178,11 @@ def run_transform(config: Dict[str, Any], base_model: str) -> str:
         f.write(quant_script)
 
     subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT)
+    
+    # 成功后将脚本重命名为隐藏文件
+    hidden_script = LOGS_DIR / f".{model_name}_trans.py"
+    tmp_script.rename(hidden_script)
+    
     return output_model
 
 
@@ -216,6 +221,13 @@ def run_quantization(input_model: str, quant_config: Dict[str, Any], gpu_devices
 
     with open(log_file, 'w') as log_f:
         subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT, stdout=log_f, stderr=log_f, env=env)
+    
+    # 成功后将脚本和日志重命名为隐藏文件
+    hidden_script = LOGS_DIR / f".{model_name}_quant.py"
+    hidden_log = LOGS_DIR / f".{model_name}_llmcompressor.log"
+    tmp_script.rename(hidden_script)
+    log_file.rename(hidden_log)
+    
     return output_model
 
 
@@ -551,6 +563,18 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
 
         # 解析结果
         results = parse_evaluation_results(model_name, output_dir)
+        
+        # 成功后将所有相关文件重命名为隐藏文件
+        hidden_vllm_sh = LOGS_DIR / f".{model_name}_vllm.sh"
+        hidden_vllm_log = LOGS_DIR / f".{model_name}_vllm.log"
+        hidden_eval_script = LOGS_DIR / f".{model_name}_eval.py"
+        hidden_eval_log = LOGS_DIR / f".{model_name}_evalscope.log"
+        
+        vllm_sh_file.rename(hidden_vllm_sh)
+        vllm_log_file.rename(hidden_vllm_log)
+        tmp_script.rename(hidden_eval_script)
+        eval_log_file.rename(hidden_eval_log)
+        
         return results
 
     finally:
@@ -619,8 +643,19 @@ def parse_evaluation_results(model_name: str, output_dir: Path = None) -> Dict[s
 
     # 解析结果文件
     results = {}
+    
+    # 1. 读取总体分数 (data_collection.json)
+    data_collection_path = reports_dir / "data_collection.json"
+    if data_collection_path.exists():
+        with open(data_collection_path, 'r') as f:
+            data = json.load(f)
+            # 提取总体分数
+            overall_score = data.get('score')
+            if overall_score is not None:
+                results['overall_score'] = overall_score
+    
+    # 2. 读取数据集级别分数 (collection_detailed_report.json)
     report_path = reports_dir / "collection_detailed_report.json"
-
     if report_path.exists():
         with open(report_path, 'r') as f:
             report = json.load(f)
@@ -648,8 +683,8 @@ def save_summary_csv(all_results: List[Dict[str, Any]], output_path: str, datase
     
     # 从结果中动态获取所有评测指标字段
     if all_results:
-        # 固定字段
-        fieldnames = ['dataset', 'timestamp', 'transform', 'quantization', 'model_path']
+        # 固定字段（调整顺序，将 overall_score 放在前面）
+        fieldnames = ['dataset', 'timestamp', 'transform', 'quantization', 'overall_score', 'model_path']
         # 动态添加评测指标字段（排除固定字段）
         first_result = all_results[0]
         for key in first_result.keys():
