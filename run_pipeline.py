@@ -111,7 +111,7 @@ def run_transform(config: Dict[str, Any], base_model: str) -> str:
     return output_model
 
 
-def run_quantization(input_model: str, quant_config: Dict[str, Any]) -> str:
+def run_quantization(input_model: str, quant_config: Dict[str, Any], gpu_devices: List[int] = None) -> str:
     """执行模型量化"""
     quant_name = quant_config['name']
 
@@ -125,7 +125,7 @@ def run_quantization(input_model: str, quant_config: Dict[str, Any]) -> str:
         logger.info(f"跳过 {quant_name} (模型已存在)")
         return output_model
 
-    logger.info(f"量化 {quant_name}")
+    logger.info(f"量化 {quant_name} (GPU: {gpu_devices})")
 
     # 构建量化脚本
     quant_script = build_quant_script(input_model, output_model, quant_config)
@@ -138,8 +138,14 @@ def run_quantization(input_model: str, quant_config: Dict[str, Any]) -> str:
     # 日志文件
     log_file = LOGS_DIR / f"{model_name}_llmcompressor.log"
 
+    # 设置环境变量：限制量化只使用指定的GPU
+    env = os.environ.copy()
+    if gpu_devices:
+        # 将GPU列表转换为逗号分隔的字符串
+        env['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpu_devices))
+
     with open(log_file, 'w') as log_f:
-        subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT, stdout=log_f, stderr=log_f)
+        subprocess.run([sys.executable, str(tmp_script)], check=True, cwd=PROJECT_ROOT, stdout=log_f, stderr=log_f, env=env)
     return output_model
 
 
@@ -384,7 +390,7 @@ def wait_for_service(port: int, timeout: int = 300) -> bool:
     return False
 
 
-def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: str, task_idx: int, total_tasks: int) -> Dict[str, float]:
+def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: str, task_idx: int, total_tasks: int, gpu_devices: List[int] = None) -> Dict[str, float]:
     """执行评测"""
     model_name = Path(model_path).name
     port = find_available_port()
@@ -394,8 +400,9 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     devices = gpu_resources.get('devices', [0])
     tensor_parallel_size = gpu_resources.get('tensor_parallel_size', 1)
 
-    # 简单的 GPU 分配策略：循环使用配置的设备
-    gpu_idx = devices[task_idx % len(devices)]
+    # 如果没有指定gpu_devices，使用默认的循环分配策略
+    if gpu_devices is None:
+        gpu_devices = [devices[task_idx % len(devices)]]
 
     # 获取输出目录配置
     work_dir = eval_config.get('output', {}).get('work_dir', 'outputs')
@@ -417,7 +424,7 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
         results = parse_evaluation_results(model_name, output_dir)
         return results
 
-    logger.info(f"评测 {model_name} (GPU:{gpu_idx}, TP:{tensor_parallel_size})")
+    logger.info(f"评测 {model_name} (GPU:{gpu_devices}, TP:{tensor_parallel_size})")
 
     # 启动 vLLM 服务
     vllm_cmd = [
@@ -427,14 +434,15 @@ def run_evaluation(model_path: str, eval_config: Dict[str, Any], dataset_path: s
     ]
 
     env = os.environ.copy()
-    env['CUDA_VISIBLE_DEVICES'] = str(gpu_idx)
+    # 将GPU列表转换为逗号分隔的字符串
+    env['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpu_devices))
     env['VLLM_USE_MODELSCOPE'] = 'true'
 
     # 保存 vLLM 启动命令到 sh 文件
     vllm_sh_file = LOGS_DIR / f"{model_name}_vllm.sh"
     with open(vllm_sh_file, 'w') as f:
         f.write(f"#!/bin/bash\n")
-        f.write(f"export CUDA_VISIBLE_DEVICES={gpu_idx}\n")
+        f.write(f"export CUDA_VISIBLE_DEVICES={','.join(map(str, gpu_devices))}\n")
         f.write(f"export VLLM_USE_MODELSCOPE=true\n")
         f.write(f"{' '.join(vllm_cmd)}\n")
 
@@ -526,31 +534,18 @@ def parse_evaluation_results(model_name: str, output_dir: Path = None) -> Dict[s
 
     # 解析结果文件
     results = {}
-    report_path = reports_dir / "data_collection.json"
+    report_path = reports_dir / "collection_detailed_report.json"
 
     if report_path.exists():
         with open(report_path, 'r') as f:
             report = json.load(f)
-            # 从 subsets 中提取 mmlu 和 gsm8k 的分数
-            metrics = report.get('metrics', [])
-            if metrics:
-                categories = metrics[0].get('categories', [])
-                if categories:
-                    subsets = categories[0].get('subsets', [])
-                    for subset in subsets:
-                        name = subset.get('name', '')
-                        score = subset.get('score', 0.0)
-                        if 'gsm8k' in name:
-                            results['gsm8k'] = score
-                        elif name.startswith('mmlu/'):
-                            # MMLU 是所有 mmlu 子集的平均分
-                            if 'mmlu' not in results:
-                                results['mmlu'] = []
-                            results['mmlu'].append(score)
-
-    # 计算 MMLU 平均分
-    if 'mmlu' in results and isinstance(results['mmlu'], list):
-        results['mmlu'] = sum(results['mmlu']) / len(results['mmlu']) if results['mmlu'] else 0.0
+            # 从 dataset_level 中提取各数据集的 weighted_avg 分数
+            dataset_level = report.get('dataset_level', [])
+            for dataset in dataset_level:
+                dataset_name = dataset.get('dataset_name', '')
+                weighted_avg = dataset.get('weighted_avg.', 0.0)
+                if dataset_name:
+                    results[dataset_name] = weighted_avg
 
     return results
 
@@ -758,18 +753,25 @@ def main():
             task_idx += 1
         
         # 第二步：提交量化+评测任务
+        gpu_devices = eval_config['gpu_resources']['devices']
+        tensor_parallel_size = eval_config['gpu_resources']['tensor_parallel_size']
+        quant_gpu_idx = 0  # 量化任务GPU索引（按tensor_parallel_size分组）
         for trans_cfg, trans_output in trans_outputs:
             for quant_cfg in quant_configs:
                 current_idx = task_idx
                 trans_name = trans_cfg['name']
                 quant_name = quant_cfg['name']
-                def process_quant(idx=current_idx, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg):
+                # 为量化+评测任务分配GPU（按tensor_parallel_size分组）
+                start_gpu = quant_gpu_idx * tensor_parallel_size
+                task_gpus = gpu_devices[start_gpu:start_gpu + tensor_parallel_size]
+                quant_gpu_idx = (quant_gpu_idx + 1) % (len(gpu_devices) // tensor_parallel_size)
+                def process_quant(idx=current_idx, t_name=trans_name, q_name=quant_name, t_out=trans_output, q_cfg=quant_cfg, gpus=task_gpus):
                     try:
                         task_name = f"{t_name}-{q_name}"
-                        logger.info(f"[量化 {idx - total_baseline + 1}/{total_quant}] 量化+评测: {task_name}")
+                        logger.info(f"[量化 {idx - total_baseline + 1}/{total_quant}] 量化+评测: {task_name} (GPU: {gpus})")
 
-                        quant_output = run_quantization(t_out, q_cfg)
-                        results = run_evaluation(quant_output, eval_config, dataset_path, idx, total_tasks)
+                        quant_output = run_quantization(t_out, q_cfg, gpus)
+                        results = run_evaluation(quant_output, eval_config, dataset_path, idx, total_tasks, gpus)
 
                         result = build_result(t_name, q_name, quant_output, results)
                         logger.success(f"[量化 {idx - total_baseline + 1}/{total_quant}] 完成: {task_name}")

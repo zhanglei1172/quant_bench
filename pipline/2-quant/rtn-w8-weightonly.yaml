@@ -9,5 +9,5 @@ quant_modifiers:
         weights: {num_bits: 8, type: int, symmetric: true, strategy: channel}
         targets: [Linear]
 
-save_compressed: False
-original_config_json: True
+save_compressed: false
+weight_only: true

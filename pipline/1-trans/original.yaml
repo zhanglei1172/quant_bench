@@ -1,6 +1,0 @@
-name: original
-description: 原始模型，无转换
-
-input_model: ./data/models/Qwen/Qwen3-8B
-
-output_suffix: null
