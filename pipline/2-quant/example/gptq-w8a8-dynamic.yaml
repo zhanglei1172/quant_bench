@@ -11,7 +11,7 @@ calibration:
 quant_modifiers:
   SpinQuantModifier:
     rotations: ["R4"]
-    transform_block_size: 256
+    transform_block_size_R4: 256
     transform_type: "hadamard"
   GPTQModifier:
     actorder: null

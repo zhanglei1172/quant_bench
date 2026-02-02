@@ -1,0 +1,26 @@
+[project]
+name = "quant-bench"
+version = "0.1.0"
+requires-python = ">=3.12.11"
+dependencies = [
+    "compressed-tensors",
+    "datasets>=2.20.0",
+    "evalscope",
+    "llmcompressor",
+    "loguru>=0.7.0",
+    "pyyaml>=6.0",
+    "torch>=2.0.0",
+    "transformers>=4.57.0",
+    "vllm>=0.12.0",
+]
+
+[tool.uv]
+override-dependencies = [
+  "datasets==3.6.0",
+  "compressed-tensors @ git+https://github.com/zhanglei1172/compressed-tensors.git@lz_exp",
+]
+
+[tool.uv.sources]
+llmcompressor = { git = "https://github.com/zhanglei1172/llm-compressor.git", rev = "lz_exp" }
+compressed-tensors = { git = "https://github.com/zhanglei1172/compressed-tensors.git", rev = "lz_exp" }
+evalscope = { git = "https://github.com/modelscope/evalscope.git" }
