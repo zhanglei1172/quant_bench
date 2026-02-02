@@ -244,17 +244,8 @@ def build_quant_script(input_model: str, output_model: str, config: Dict[str, An
     # 检查是否是 data-free 量化
     is_data_free = calib_cfg is None
 
-    # 检查是否是 weight-only (用于清理 quantization_config)
-    is_weight_only = False
-    if 'QuantizationModifier' in quant_modifiers:
-        mod_cfg = quant_modifiers['QuantizationModifier']
-        groups = mod_cfg.get('config_groups', {})
-        for group in groups.values():
-            # 如果没有 input_activations 或者 input_activations 被注释掉了，则是 weight-only
-            act = group.get('input_activations')
-            if act is None:
-                is_weight_only = True
-                break
+    # 优先使用配置文件中的 weight_only 字段
+    is_weight_only = config.get('weight_only', False)
 
     # 默认 save_compressed 为 False
     if save_compressed is None:
