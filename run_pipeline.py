@@ -244,9 +244,6 @@ def build_quant_script(input_model: str, output_model: str, config: Dict[str, An
     # 检查是否是 data-free 量化
     is_data_free = calib_cfg is None
 
-    # 优先使用配置文件中的 weight_only 字段
-    is_weight_only = config.get('weight_only', False)
-
     # 默认 save_compressed 为 False
     if save_compressed is None:
         save_compressed = False
@@ -336,8 +333,8 @@ finally:
     script += f"""
 SAVE_DIR = "{output_model}"
 
-# 当 weight_only=True 时，使用权重移植方式保存（避免量化相关配置污染）
-if {is_weight_only}:
+# 当 save_compressed=False 时，使用权重移植方式保存（避免量化相关配置污染）
+if {not save_compressed}:
     import gc
     print(">>> [1/3] Quantization complete, preparing weight transplant...")
     
