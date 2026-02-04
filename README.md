@@ -5,6 +5,16 @@ Qwen3-8B 模型从转换（SpinQuant）→ 量化（RTN/GPTQ）→ 评测的完�
 ## 快速开始
 
 ### 安装依赖
+
+**推荐方式：使用 uv**
+```bash
+./install_env.sh
+# 或手动执行：
+uv sync -i https://pypi.tuna.tsinghua.edu.cn/simple
+source ./.venv/bin/activate
+```
+
+**使用 pip**
 ```bash
 pip install -r requirements.txt
 ```
