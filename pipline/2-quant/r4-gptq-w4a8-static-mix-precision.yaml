@@ -5,6 +5,10 @@ calibration:
   max_sequence_length: 2048
 
 quant_modifiers:
+  SpinQuantModifier:
+    rotations: ["R4"]
+    transform_block_size_R4: 256
+    transform_type: "hadamard"
   GPTQModifier:
     actorder: null
     ignore: ["lm_head", "re:visual.*", "re:model.visual.*"]
@@ -16,19 +20,23 @@ quant_modifiers:
           symmetric: true
           strategy: channel
           observer: mse
-          observer_kwargs:
-            maxshrink: 0.1
-            patience: 10
-            averaging_constant: 0.05
-            grid: 128.0
-            norm: 2.0
         input_activations:
           num_bits: 8
           type: int
           symmetric: true
-          strategy: token
-          dynamic: true
+          strategy: tensor
+          dynamic: false
         targets: [Linear]
+      group_1:
+        weights:
+          num_bits: 4
+          type: int
+          symmetric: true
+          strategy: channel
+          observer: mse
+        # input_activations: null
+        # special outliers handling for down_proj layers activation quantization of Qwen3-8B model
+        targets: ["re:model.layers.6.mlp.down_proj", "re:model.layers.16.mlp.down_proj"]
 
 save_compressed: true
 dtype: float32

@@ -14,7 +14,8 @@ quant_modifiers:
           num_bits: 4
           type: int
           symmetric: true
-          strategy: channel
+          group_size: 128
+          strategy: group
           observer: mse
           observer_kwargs:
             maxshrink: 0.1
@@ -22,12 +23,7 @@ quant_modifiers:
             averaging_constant: 0.05
             grid: 128.0
             norm: 2.0
-        input_activations:
-          num_bits: 8
-          type: int
-          symmetric: true
-          strategy: token
-          dynamic: true
+        # input_activations: null
         targets: [Linear]
 
 save_compressed: true

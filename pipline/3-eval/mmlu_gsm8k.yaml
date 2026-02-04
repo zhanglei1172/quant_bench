@@ -1,6 +1,6 @@
-dataset_name: qwen3_8b_mmlu_gsm8k_1024
+dataset_name: mmlu_gsm8k_1024
 
-base_model: /tmp/qunt_bench/Qwen3-8B
+base_model: data/models/Qwen/Qwen3-8B
 
 datasets:
   - name: mmlu
@@ -28,4 +28,4 @@ gpu_resources:
   pipeline_parallel_size: 1
 
 output:
-  work_dir: outputs/qwen3_8b_mmlu_gsm8k_1024
+  work_dir: outputs/mmlu_gsm8k_1024

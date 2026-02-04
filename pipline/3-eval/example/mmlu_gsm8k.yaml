@@ -1,6 +1,6 @@
 dataset_name: mmlu_gsm8k_1024
 
-base_model: ./data/models/Qwen/Qwen3-8B
+base_model: data/models/Qwen/Qwen3-8B
 
 datasets:
   - name: mmlu

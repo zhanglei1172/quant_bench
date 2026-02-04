@@ -1,7 +1,3 @@
-name: gptq-w8a8-static
-
-output_suffix: -R4-gptq-W8A8-static
-
 calibration:
   dataset_id: /dataset/workspace/lim42/datasets/ultra_chat_200k/
   dataset_split: train_sft
@@ -11,15 +7,27 @@ calibration:
 quant_modifiers:
   SpinQuantModifier:
     rotations: ["R4"]
-    transform_block_size_r4: 256
+    transform_block_size_R4: 256
     transform_type: "hadamard"
   GPTQModifier:
     actorder: null
     ignore: ["lm_head", "re:visual.*", "re:model.visual.*"]
     config_groups:
       group_0:
-        weights: {num_bits: 8, type: int, symmetric: true, strategy: channel}
-        input_activations: {num_bits: 8, type: int, symmetric: true, strategy: tensor, dynamic: false}
+        weights:
+          num_bits: 4
+          type: int
+          symmetric: true
+          strategy: channel
+          observer: mse
+        input_activations:
+          num_bits: 8
+          type: int
+          symmetric: true
+          strategy: tensor
+          dynamic: false
+          observer: minmax
         targets: [Linear]
 
 save_compressed: true
+dtype: float32
