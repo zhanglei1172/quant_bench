@@ -1187,8 +1187,6 @@ def main():
             result = future.result()
             if result:
                 all_results.append(result)
-            # 移除手动刷新调用，因为 update_status 已经自动刷新
-            # task_tracker.refresh()
 
         # 停止实时显示
         task_tracker.stop_live_display()

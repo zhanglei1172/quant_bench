@@ -72,3 +72,37 @@ outputs/{dataset_name}/reports/{model_name}/
 - ✅ 量化和评测任务并行执行，一键完成复杂量化测评流程
 - ✅ 临时py脚本保存到logs目录，可debug
 - ✅ GPU自动并行分配（按pipeline_parallel_size, R4与tensor_parallel不兼容）
+- ✅ 从文件名自动提取配置名称，无需在 YAML 中重复指定
+
+## 测试已有模型
+
+如果你想测试已有的转换或量化模型，可以按照以下步骤操作：
+
+### 测试已有转换模型
+
+1. 在 `pipline/1-trans/` 目录下创建一个空的 YAML 文件，文件名即作为转换名称（例如 `my-custom-trans.yaml`）
+2. 在 `data/models/` 目录下创建对应的模型文件夹，文件名需要加上 `-` 前缀（例如 `Qwen/Qwen3-8B-my-custom-trans`）
+3. 将你已有的转换模型文件放入该文件夹中
+4. 运行流程，系统会自动跳过转换步骤，直接使用已有模型进行量化和评测
+
+### 测试已有量化模型
+
+1. 在 `pipline/2-quant/` 目录下创建一个空的 YAML 文件，文件名即作为量化名称（例如 `my-custom-quant.yaml`）
+2. 在 `data/models/` 目录下创建对应的模型文件夹，路径需要是 `基础模型路径-转换名称-量化名称`（例如 `Qwen/Qwen3-8B-r1r2-my-custom-quant`）
+3. 将你已有的量化模型文件放入该文件夹中
+4. 运行流程，系统会自动跳过量化步骤，直接评测已有模型
+
+**示例**：
+```
+# 目录结构
+data/models/Qwen/
+├── Qwen3-8B                    # 原始模型
+├── Qwen3-8B-r1r2               # 已有的转换模型
+└── Qwen3-8B-r1r2-w4a8-custom    # 已有的量化模型
+
+# 配置文件
+pipline/1-trans/r1r2.yaml       # 空文件或仅包含配置
+pipline/2-quant/w4a8-custom.yaml # 空文件或仅包含配置
+```
+
+系统会自动检测模型文件夹是否存在，如果存在则跳过对应的转换或量化步骤。

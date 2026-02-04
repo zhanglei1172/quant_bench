@@ -9,3 +9,4 @@ git+https://github.com/modelscope/evalscope.git
 
 pyyaml>=6.0
 loguru>=0.7.0
+rich>=13.3.4
